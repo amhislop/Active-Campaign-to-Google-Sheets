@@ -18,6 +18,10 @@ class GoogleSheets {
 
   spreadsheetId = '';
 
+  _auth;
+
+  _sheets;
+
   constructor(client_id, client_secret, project_id, spreadsheet_id) {
     this.client_id = client_id;
     this.client_secret = client_secret;
@@ -34,18 +38,135 @@ class GoogleSheets {
     if (!path.spreadsheetId) path.spreadsheetId = this.spreadsheetId;
     if (!path.range) path.range = 'A:Z';
 
+    return await this.execute({ property: 'values', method: 'get' }, path);
+  }
+
+  async update({ range, valueInputOption }, data) {
+    // const auth = await this.authenticate();
+    // const sheets = google.sheets({ version: 'v4', auth });
+
+    // const { spreadsheetId } = this;
+    const resource = {
+      values: [[data]],
+    };
+
+    const res = await this.execute(
+      { property: 'values', method: 'update' },
+      { range, valueInputOption, resource }
+    );
+    console.log('%d cells updated.', res.updatedCells);
+
+    return res;
+  }
+
+  /**
+   * [description]
+   * @todo set default ranges in class defaults property
+   */
+  async append(props) {
+    let { range, valueInputOption, insertDataOption, resource } = props;
+    const { spreadsheetId } = this;
+
+    // Defaults
+    range = range || 'A-Z';
+    valueInputOption = valueInputOption || 'USER_ENTERED';
+    insertDataOption = insertDataOption || 'INSERT_ROWS';
+
+    const auth = await this.authenticate();
+    const sheets = google.sheets({ version: 'v4', auth });
+
+    const request = {
+      spreadsheetId,
+      range, // The A1 notation of a range to search for a logical table of data.
+      valueInputOption, // How the input data should be interpreted.
+      insertDataOption, // How the input data should be inserted.
+      resource,
+    };
+
     try {
-      const oAuth = await this.authenticate();
-      const ids = await this.listCampaignIds(oAuth, path, callback);
-      console.log(ids);
-      console.log('getting ids');
-      return ids;
+      const response = (await sheets.spreadsheets.values.append(request)).data;
+      // TODO: Change code below to process the `response` object
+      return response;
     } catch (err) {
-      console.error('Read had an error: ', err);
+      console.error(err);
     }
   }
 
-  async write(data) {}
+  async clear(ranges) {
+    const request = {
+      resource: { ranges },
+    };
+
+    return await this.execute(
+      { property: 'values', method: 'batchClear' },
+      request
+    );
+  }
+
+  async batchUpdate(updates) {
+    const auth = await this.authenticate();
+    const { spreadsheetId } = this;
+    const sheets = google.sheets({ version: 'v4', auth });
+    const request = {
+      spreadsheetId,
+      auth,
+      resource: { requests: updates },
+    };
+
+    try {
+      const response = (await sheets.spreadsheets.batchUpdate(request)).data;
+      // TODO: Change code below to process the `response` object
+      return response;
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
+  async get() {
+    const request = {
+      fields: 'sheets.properties',
+    };
+
+    const sheet = await this.execute({ method: 'get' }, request);
+
+    return sheet;
+  }
+
+  async execute({ property, method }, resource) {
+    const { spreadsheetId } = this;
+    const { auth, sheets } = await this.init();
+
+    const request = {
+      auth,
+      spreadsheetId,
+      ...resource,
+    };
+
+    try {
+      let response;
+
+      if (property) {
+        response = (await sheets.spreadsheets[property][method](request)).data;
+      } else {
+        response = (await sheets.spreadsheets[method](request)).data;
+      }
+
+      return response;
+    } catch (err) {
+      console.error(`The update API returned an error: ${err}`);
+    }
+  }
+
+  async init() {
+    try {
+      const auth = await this.authenticate();
+      const sheets = google.sheets({ version: 'v4', auth });
+      return { auth, sheets };
+    } catch (err) {
+      console.error('Error during init');
+      return false;
+    }
+  }
 
   /**
    * Create an OAuth2 client with the given credentials, and then execute the
@@ -54,28 +175,31 @@ class GoogleSheets {
    * @param {function} callback The callback to call with the authenticated client.
    */
   async authenticate() {
-    const { client_secret, client_id, redirect_uris } = this;
-    const oAuth2Client = new google.auth.OAuth2(
-      client_id,
-      client_secret,
-      redirect_uris[0]
-    );
+    if (!this._auth) {
+      const { client_secret, client_id, redirect_uris } = this;
+      const oAuth2Client = new google.auth.OAuth2(
+        client_id,
+        client_secret,
+        redirect_uris[0]
+      );
 
-    // Check if we have previously stored a token.
-    try {
-      const token = await fs.readFile(TOKEN_PATH);
-      oAuth2Client.setCredentials(JSON.parse(token));
-      return oAuth2Client;
-      // return true;
-    } catch (err) {
-      const token = await this.getNewToken(oAuth2Client);
-      oAuth2Client.setCredentials(token);
+      // Check if we have previously stored a token.
+      try {
+        const token = await fs.readFile(TOKEN_PATH);
+        oAuth2Client.setCredentials(JSON.parse(token));
+        this._auth = oAuth2Client;
+      } catch (err) {
+        const token = await this.getNewToken(oAuth2Client);
+        oAuth2Client.setCredentials(token);
 
-      await fs.writeFile(TOKEN_PATH, JSON.stringify(token));
-      console.log('Token stored to', TOKEN_PATH);
+        await fs.writeFile(TOKEN_PATH, JSON.stringify(token));
+        console.log('Token stored to', TOKEN_PATH);
 
-      return oAuth2Client;
+        this._auth = oAuth2Client;
+      }
     }
+
+    return this._auth;
   }
 
   /**
@@ -114,35 +238,15 @@ class GoogleSheets {
       return console.error('Error while trying to retrieve access token', err);
     }
   }
-
-  /**
-   * Prints the Campaign Ids in a sample spreadsheet:
-   * @see https://docs.google.com/spreadsheets/d/1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms/edit
-   * @param {google.auth.OAuth2} auth The authenticated Google OAuth client.
-   * @param {object} path The path parameters object.
-   */
-  async listCampaignIds(auth, path) {
-    const sheets = google.sheets({ version: 'v4', auth });
-
-    try {
-      const response = (await sheets.spreadsheets.values.get(path)).data;
-      return response;
-    } catch (err) {
-      console.log('The API returned an error: ' + err);
-      return;
-    }
-    // sheets.spreadsheets.values.get(path, (err, res) => {
-    //   if (err) return console.log('The API returned an error: ' + err);
-    //   const rows = res.data.values;
-    //   if (rows.length) {
-    //     rows.map((row) => {
-    //       console.log(row);
-    //     });
-    //   } else {
-    //     console.log('No data found.');
-    //   }
-    // });
-  }
 }
 
-module.exports = GoogleSheets;
+// module.exports = GoogleSheets;
+
+module.exports = function (
+  client_id,
+  client_secret,
+  project_id,
+  spreadsheet_id
+) {
+  return new GoogleSheets(client_id, client_secret, project_id, spreadsheet_id);
+};

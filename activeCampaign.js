@@ -39,7 +39,8 @@ class ActiveCamapignAPI {
 
   async _get(endpoint, params = null) {
     let url = `${this._url}/${endpoint}`;
-    if (params) url += `?${params}`;
+
+    if (params) url += this._format_params(params);
 
     try {
       const response = await fetch(url, this.requestOptions);
@@ -49,6 +50,23 @@ class ActiveCamapignAPI {
     } catch (err) {
       console.log(err);
     }
+  }
+
+  _format_params(params) {
+    return (
+      '?' +
+      Object.entries(params)
+        .map(([key, value]) => {
+          if (typeof value === 'object' && value) {
+            return Object.entries(value)
+              .map(([k, v]) => `${key}[${k}]=${v}`)
+              .join('&');
+          } else {
+            return `${key}=${value}`;
+          }
+        })
+        .join('&')
+    );
   }
 }
 

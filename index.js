@@ -1,119 +1,135 @@
 require('dotenv').config();
+
+const { findLetterIndex, getDataRanges } = require('./util');
+const {
+  formatSendDate,
+  relPath,
+  calcBounce,
+  getCampaign,
+  formatData,
+} = require('./report');
+
 const activeCampaign = require('./activeCampaign')(
   process.env.AC_URL,
   process.env.AC_API_TOKEN
 );
 
-// Determine sample date (2 weeks prior to now)
-const filters = Object.entries({
-  status: 5, // 5 = completed
-})
-  .map(([key, value]) => `filters[${key}]=${value}`)
-  .join('&');
+const googleSheets = require('./googleSheets')(
+  process.env.GS_CLIENT_ID,
+  process.env.GS_CLIENT_SECRET,
+  process.env.GS_PROJECT_ID,
+  process.env.GS_SPREADSHEET_ID
+);
 
-const params = [filters].join('&');
+/**
+ * @type {Array.<column: String, prop: String|Function, type?: String>} fieldMap
+ */
+const fieldMap = [
+  { column: 'id', prop: 'sendid' },
+  { column: 'sentOn', prop: formatSendDate },
+  { column: 'sendDate', prop: relPath('sentOn') },
+  { column: 'sendTime', prop: relPath('sentOn') },
+  { column: 'name', prop: 'name' },
+  { column: 'campaign', prop: 'analytics_campaign_name' },
+  { column: 'subject', prop: 'message.subject' },
+  { column: 'preheader', prop: 'message.preheader_text' },
+  { column: 'fromName', prop: 'message.fromname' },
+  { column: 'fromEmail', prop: 'message.fromemail' },
+  { column: 'deliveries', prop: 'total_amt', type: 'number' },
+  { column: 'opens', prop: 'opens', type: 'number' },
+  { column: 'uniqueOpens', prop: 'uniqueopens', type: 'number' },
+  { column: 'openRate', prop: relPath('uniqueOpens/deliveries') },
+  { column: 'clicks', prop: 'linkclicks', type: 'number' },
+  { column: 'uniqueClicks', prop: 'uniquelinkclicks', type: 'number' },
+  { column: 'clickThroughRate', prop: relPath('uniqueClicks/deliveries') },
+  { column: 'clickToOpenRate', prop: relPath('uniqueClicks/uniqueOpens') },
+  { column: 'bounces', prop: calcBounce },
+  { column: 'bounceRate', prop: relPath('bounces/deliveries') },
+  { column: 'unsubscribes', prop: 'unsubscribes', type: 'number' },
+  { column: 'unsubscribeRate', prop: relPath('unsubscribes/deliveries') },
+];
 
-function getCampaign(data) {
-  if (data.analytics_campaign_name) {
-    return data.analytics_campaign_name;
-  } else {
-    const { name } = data;
-    const word = name.match(/^([a-zA-Z0-9])+/)[0]?.toLowerCase();
-    const campaignNames = {
-      enews: 'eNews',
-      churches: 'Stand Together',
-      mg: 'Matching Grant Fund',
-      cs: 'Child Sponorship',
-      btb: 'Behind The Barcode',
-      covid: 'COVID-19 Global Emergency',
-    };
-
-    for (const prop in campaignNames) {
-      if (word === prop) return campaignNames[prop];
-    }
-
-    return name;
-  }
-}
-
-function padTime(hours, minutes, seconds) {
-  let [mm, ss] = [minutes, seconds].map(
-    (t) => (t.toString().length < 2 ? `0` : '') + t
-  );
-
-  return [hours, mm, ss].join(':');
-}
-
-const formatSendDate = (sdate) => {
-  const dateTime = new Date(sdate);
-
-  const year = dateTime.getFullYear(),
-    month = dateTime.getMonth() + 1,
-    day = dateTime.getDate(),
-    hours = dateTime.getHours(),
-    minutes = dateTime.getMinutes(),
-    seconds = dateTime.getSeconds();
-
-  const sendDate = [month, day, year].join('/'),
-    sendTime = padTime(hours, minutes, seconds),
-    sentOn = [sendDate, sendTime].join(' ');
-
-  return { sendDate, sendTime, sentOn };
-};
-
-const formatCampaigns = (campaigns) => {
-  const x = campaigns.map((campaign) => {
-    const { sendDate, sendTime, sentOn } = formatSendDate(campaign.sdate);
-    const { name, opens, softbounces, hardbounces, unsubscribes } = campaign;
-    const bounces = parseInt(softbounces) + parseInt(hardbounces);
-
-    const data = {
-      sentOn,
-      sendDate,
-      sendTime,
-      name,
-      opens,
-      bounces,
-      unsubscribes,
-    };
-
-    data.id = campaign.sendid;
-    data.campaign = getCampaign(campaign);
-    data.deliveries = campaign.total_amt;
-    data.uniqueOpensCount = campaign.uniqueopens;
-    data.clicks = campaign.linkclicks;
-    data.uniqueClicksCount = campaign.uniqueLinkClicks;
-
-    return data;
-  });
-
-  return x;
-};
-
+/**
+ * @todo Change this to batch update
+ */
 const startProcess = async () => {
   try {
-    const { campaigns } = await activeCampaign.campaigns.get(params);
-
-    const campaignsData = formatCampaigns(campaigns);
-
-    const messages = await campaignsData.map(async (data) => {
-      const { message } = await activeCampaign.campaignMessages.get(data.id);
-
-      data.subject = message.subject;
-      data.preheader = message.preheader_text;
-      data.fromName = message.fromname;
-      data.fromEmail = message.fromemail;
-      return data;
+    const { campaigns } = await activeCampaign.campaigns.get({
+      filters: { status: 5 },
     });
 
-    const data = await Promise.all(messages);
+    if (!campaigns) {
+      console.log('no data this time!');
+      return;
+    }
 
-    console.log(data);
+    console.log('🎣   Fetching Campaign Reports');
 
-    // Read google sheets file
-    // Check each row for same ID
-    // - Update cells for rows with same id
-    // - Write remainder of rows as new entries
+    const campaignData = await campaigns.map(async (campaign) => {
+      const { message } = await activeCampaign.campaignMessages.get(
+        campaign.sendid
+      );
+      campaign.message = message;
+      return campaign;
+    });
+
+    const data = (await Promise.all(campaignData)).map(formatData(fieldMap));
+
+    console.log(`📦   ${data.length} Campaign Reports Received`);
+
+    const { sheetId, gridProperties } = (
+      await googleSheets.get()
+    ).sheets[0].properties;
+
+    const endColumn = findLetterIndex(gridProperties.columnCount);
+
+    console.log(`🔍   Searching for columns to update`);
+
+    const idColumn = { range: 'A:A' };
+    const { values: ids } = await googleSheets.read(idColumn);
+
+    // Capture rows to delete
+    const deleteValues = ids.reduce((acc, [id], index) => {
+      const existing = data?.find(([dataId]) => dataId == id);
+      if (existing) acc.push(index + 1);
+      return acc;
+    }, []);
+
+    const requests = [];
+
+    // Compile and prepare delete request
+    if (deleteValues) {
+      const { ranges } = getDataRanges(deleteValues.sort());
+
+      ranges.forEach((range) => {
+        requests.push({
+          deleteDimension: {
+            range: {
+              sheetId,
+              dimension: 'ROWS',
+              startIndex: range.start,
+              endIndex: range.end,
+            },
+          },
+        });
+      });
+    }
+
+    if (requests.length) {
+      console.log(`♻️   Updating ${deleteValues.length} rows`);
+      const batchUpdated = await googleSheets.batchUpdate(requests);
+    } else {
+      console.log('no requests');
+    }
+
+    console.log(`➕   Appending new values`);
+
+    await googleSheets.append({
+      resource: { values: data },
+      range: `A:${endColumn}`,
+    });
+
+    console.log('🏁   Spreadsheet updated');
   } catch (err) {
     console.log(err);
   }
