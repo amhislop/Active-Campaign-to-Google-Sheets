@@ -1,4 +1,4 @@
-const fetch = require('node-fetch');
+import axios from 'axios';
 
 class ActiveCamapignAPI {
   _url;
@@ -43,10 +43,9 @@ class ActiveCamapignAPI {
     if (params) url += this._format_params(params);
 
     try {
-      const response = await fetch(url, this.requestOptions);
-      const json = await response.json();
+      const { data } = await axios.get(url, this.requestOptions);
 
-      return json;
+      return data;
     } catch (err) {
       console.log(err);
     }
@@ -70,6 +69,6 @@ class ActiveCamapignAPI {
   }
 }
 
-module.exports = function activeCampaign(url, token) {
+export default function activeCampaign(url, token) {
   return new ActiveCamapignAPI(url, token);
-};
+}

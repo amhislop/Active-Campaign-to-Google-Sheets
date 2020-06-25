@@ -1,9 +1,10 @@
-const fs = require('fs').promises;
-const readline = require('readline');
-const { promisify } = require('util');
-const { google } = require('googleapis');
+import { promises as fs } from 'fs';
+import readLine from 'readline';
+import Google from 'googleapis';
+import { promisify } from 'util';
 
 // If modifying these scopes, delete token.json.
+const google = new Google.GoogleApis();
 const SCOPES = ['https://www.googleapis.com/auth/spreadsheets'];
 const TOKEN_PATH = 'token.json';
 
@@ -240,13 +241,6 @@ class GoogleSheets {
   }
 }
 
-// module.exports = GoogleSheets;
-
-module.exports = function (
-  client_id,
-  client_secret,
-  project_id,
-  spreadsheet_id
-) {
+export default function (client_id, client_secret, project_id, spreadsheet_id) {
   return new GoogleSheets(client_id, client_secret, project_id, spreadsheet_id);
-};
+}
